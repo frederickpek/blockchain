@@ -1,6 +1,7 @@
 import requests
 from blockchain.ethereum.explorer.consts import BASE_URL
 
+
 class Client:
     def __init__(self, api_key):
         self.api_key = api_key
@@ -17,4 +18,3 @@ class Client:
         if status != "1":
             raise ValueError(data)
         return data["result"]
-    

@@ -3,7 +3,6 @@ from blockchain.ethereum.explorer.consts import WEI_TO_ETH
 
 
 class EtherscanApi(Client):
-
     @staticmethod
     def wei_to_eth(wei) -> float:
         return float(wei) * WEI_TO_ETH
@@ -12,16 +11,13 @@ class EtherscanApi(Client):
         """
         Returns the Ether balance of a given address.
         """
-        wei_balance: str = self.get(
-            "account",
-            "balance",
-            address=address,
-            tag=tag
-        )
+        wei_balance: str = self.get("account", "balance", address=address, tag=tag)
         eth_balance = self.wei_to_eth(wei_balance)
         return eth_balance
 
-    def get_erc20_token_balance(self, address: str, contractaddress: str, tag: str = "latest") -> float:
+    def get_erc20_token_balance(
+        self, address: str, contractaddress: str, tag: str = "latest"
+    ) -> float:
         """
         Returns the current balance of an ERC-20 token of an address.
         """
@@ -30,6 +26,6 @@ class EtherscanApi(Client):
             "tokenbalance",
             address=address,
             contractaddress=contractaddress,
-            tag=tag
+            tag=tag,
         )
         return float(erc20_token_balance)

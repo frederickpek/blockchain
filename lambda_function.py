@@ -1,6 +1,7 @@
 from blockchain.ethereum.explorer.api import EtherscanApi
 from blockchain.secret import ETHERSCAN_API_KEY, ETH_WALLET_ADDR
 
+
 def main():
     api = EtherscanApi(ETHERSCAN_API_KEY)
     eth = api.get_ether_balance(ETH_WALLET_ADDR)
@@ -14,7 +15,7 @@ def main():
 
     for token, contract_addr, precision in tokens:
         bal = api.get_erc20_token_balance(ETH_WALLET_ADDR, contract_addr)
-        bal = float(bal) / 10 ** precision
+        bal = float(bal) / 10**precision
         print(token, bal)
 
 
