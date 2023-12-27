@@ -1,46 +1,97 @@
-from blockchain.ethereum.explorer.api import EtherscanApi
-from blockchain.secret import ETHERSCAN_API_KEY, ETH_WALLET_ADDR
-from blockchain.ethereum.web3.client import EthWeb3Client
+import time
+import asyncio
+import logging
+import traceback
+import pandas as pd
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from blockchain.birdeye.BirdeyeApi import BirdeyeApi
+from blockchain.utils.TelegramBot import telegram_bot_sendtext
+from blockchain.utils.YFinanceApi import YFinanceApi
+from blockchain.secret import (
+    CHAIN_WALLET_MAPPING,
+    BIRDEYE_API_KEY,
+)
 
 
 def main():
-    api = EtherscanApi(ETHERSCAN_API_KEY)
-    eth = api.get_ether_balance(ETH_WALLET_ADDR)
-    print(eth)
+    start_time = time.time()
+    birdeye_api = BirdeyeApi(api_key=BIRDEYE_API_KEY)
 
-    tokens = [
-        ("OKB", "0x75231F58b43240C9718Dd58B4967c5114342a86c", 18),
-        ("LINK", "0x514910771AF9Ca656af840dff83E8264EcF986CA", 18),
-        ("UNI", "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984", 18),
-    ]
+    async def collect_chain_wallet_balances(chain, wallet):
+        data = await birdeye_api.get_wallet_portfolio(chain=chain, wallet=wallet)
+        return chain, wallet, data
 
-    for token, contract_addr, precision in tokens:
-        bal = api.get_erc20_token_balance(ETH_WALLET_ADDR, contract_addr)
-        bal = float(bal) / 10**precision
-        print(token, bal)
+    chain_wallets = []
+    for chain, wallets in CHAIN_WALLET_MAPPING.items():
+        for wallet in wallets:
+            chain_wallets.append((chain, wallet))
 
-
-def main2():
-    # web3 client test
-    wallet_address = "0xf1790Dd7b24b9B6e57aD4b392A9A5fDd4a07220e"
-    token_definitions = [
-        ("RIO", "0xf21661D0D1d76d3ECb8e1B9F1c923DBfffAe4097", 18),
-        ("NXRA", "0x644192291cc835A93d6330b24EA5f5FEdD0eEF9e", 18),
-        ("VRA", "0xF411903cbC70a74d22900a5DE66A2dda66507255", 18),
-        ("ROUTE", "0x16ECCfDbb4eE1A85A33f3A9B21175Cd7Ae753dB4", 18),
-        ("DAG", "0xA8258AbC8f2811dd48EccD209db68F25E3E34667", 8),
-        ("PEPE", "0x6982508145454Ce325dDbE47a25d4ec3d2311933", 18),
-    ]
-    client = EthWeb3Client(wallet_address=wallet_address)
-    for token, token_contract_address, decimals in token_definitions:
-        balance = client.get_erc20_token_balance(
-            token_contract_address, decimals=decimals
+    loop = asyncio.get_event_loop()
+    asyncio.set_event_loop(loop)
+    sgd_usd, *chain_wallet_data = loop.run_until_complete(
+        asyncio.gather(
+            YFinanceApi.async_get_yfinance_ticker_price(ticker="SGDUSD=X"),
+            *[
+                collect_chain_wallet_balances(chain, wallet)
+                for chain, wallet in chain_wallets
+            ],
         )
-        print(f"{token} balance: {balance:,.3f}")
+    )
+
+    rows = []
+    all_wallets_total_usd = 0
+    for chain, wallet, data in chain_wallet_data:
+        all_wallets_total_usd += data.get("totalUsd", 0)
+        items = data.get("items", [])
+        for item in items:
+            symbol = item.get("symbol")
+            value = item.get("valueUsd")
+            if not all([symbol, value]):
+                continue
+            rows.append(
+                {
+                    "chain": chain[:3].upper(),
+                    "wallet": wallet[:5],
+                    "symbol": symbol,
+                    "val": value,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values(by=["chain", "wallet", "val"], ascending=False)
+    df["val"] = df["val"].apply(lambda x: f"${x:,.2f}")
+    breakdown_table = df.to_string(index=False)
+
+    all_wallets_total_sgd = all_wallets_total_usd / sgd_usd
+    balances = pd.Series(
+        data={
+            "Usd Balance:": f"${all_wallets_total_usd:,.2f}",
+            "Sgd Balance:": f"${all_wallets_total_sgd:,.2f}",
+        }
+    ).to_string()
+
+    time_fmt = " %d %B %Y, %H:%M %p"
+    time_zone = ZoneInfo("Asia/Singapore")
+    dt = datetime.now(tz=time_zone).strftime(time_fmt)
+
+    end_time = time.time()
+    duration = f"[Finished in {end_time - start_time:,.3f}s]"
+
+    msg = "\n\n".join([dt, breakdown_table, balances, duration])
+    telegram_bot_sendtext("```" + msg + "```")
 
 
 def lambda_handler(event=None, context=None):
-    main2()
+    try:
+        main()
+        return {"statusCode": 200}
+    except Exception as err:
+        error_msg = f"{err}\n{traceback.format_exc()}"
+        logging.error(error_msg)
+        telegram_bot_sendtext(error_msg)
+    return {"statusCode": 500}
 
 
 if __name__ == "__main__":
