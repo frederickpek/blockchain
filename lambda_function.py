@@ -1,4 +1,5 @@
 import time
+import json
 import asyncio
 import logging
 import traceback
@@ -9,15 +10,24 @@ from zoneinfo import ZoneInfo
 from blockchain.birdeye.BirdeyeApi import BirdeyeApi
 from blockchain.utils.TelegramBot import telegram_bot_sendtext
 from blockchain.utils.YFinanceApi import YFinanceApi
+from blockchain.utils.GoogleSheetsClient import GoogleSheetsClient
+from blockchain.utils.ascii_chart import gen_ascii_plot
 from blockchain.secret import (
     CHAIN_WALLET_MAPPING,
     BIRDEYE_API_KEY,
+    SPREADSHEET_ID,
 )
+
+GSDB_DEFI_EXTERNAL_ASSETS_CELL = "B3"
+GSDB_DEFI_WALLET_BALANCES_CELL = "B2"
 
 
 def main():
     start_time = time.time()
     birdeye_api = BirdeyeApi(api_key=BIRDEYE_API_KEY)
+    gsdb = GoogleSheetsClient(
+        "./blockchain/credentials.json", spreadsheet_id=SPREADSHEET_ID
+    )
 
     async def collect_chain_wallet_balances(chain, wallet):
         data = await birdeye_api.get_wallet_portfolio(chain=chain, wallet=wallet)
@@ -40,6 +50,9 @@ def main():
         )
     )
 
+    cached_prices = dict()
+
+    # WALLET ASSETS
     rows = []
     all_wallets_total_usd = 0
     for chain, wallet, data in chain_wallet_data:
@@ -48,20 +61,46 @@ def main():
         for item in items:
             symbol = item.get("symbol")
             value = item.get("valueUsd")
-            if not all([symbol, value]):
+            price = item.get("priceUsd")
+            if not all([symbol, value, price]):
                 continue
             rows.append(
                 {
                     "chain": chain[:3].upper(),
                     "wallet": wallet[:5],
                     "symbol": symbol,
-                    "val": value,
+                    "value": value,
+                }
+            )
+            cached_prices[symbol] = price
+
+    # EXTERNAL ASSETS
+    external_chain_assets: list = json.loads(
+        gsdb.get_cell(GSDB_DEFI_EXTERNAL_ASSETS_CELL)
+    )
+    for info in external_chain_assets:
+        chain = info.get("chain")
+        wallet = info.get("wallet")
+        assets = info.get("assets")
+        for asset in assets:
+            symbol = asset.get("symbol")
+            alias = asset.get("alias")
+            qty = asset.get("qty")
+            price = cached_prices.get(symbol, cached_prices.get(alias, 0))
+            value = qty * price
+            all_wallets_total_usd += value
+            rows.append(
+                {
+                    "chain": chain[:3].upper(),
+                    "wallet": wallet[:5],
+                    "symbol": symbol,
+                    "value": value,
                 }
             )
 
     df = pd.DataFrame(rows)
-    df = df.sort_values(by=["chain", "wallet", "val"], ascending=False)
-    df["val"] = df["val"].apply(lambda x: f"${x:,.2f}")
+    df = df.sort_values(by=["chain", "wallet", "value"], ascending=False)
+    df["value"] = df["value"].apply(lambda x: f"${x:,.2f}")
     breakdown_table = df.to_string(index=False)
 
     all_wallets_total_sgd = all_wallets_total_usd / sgd_usd
@@ -72,6 +111,22 @@ def main():
         }
     ).to_string()
 
+    # CHART
+    max_num_points = 32
+    ts_now = datetime.now().replace(minute=0, second=0, microsecond=0).timestamp()
+    point_now = {str(int(ts_now)): all_wallets_total_usd}
+    series: dict = json.loads(gsdb.get_cell(GSDB_DEFI_WALLET_BALANCES_CELL))
+    series.update(point_now)
+    series = [(ts, bal) for ts, bal in series.items()]
+    series.sort(key=lambda x: x[0])
+    series = series[-max_num_points:]
+    points = list(map(lambda x: x[1], series))
+    chart = gen_ascii_plot(points=points)
+
+    # Save Data
+    series_dict = {ts: bal for ts, bal in series}
+    gsdb.update_cell(GSDB_DEFI_WALLET_BALANCES_CELL, json.dumps(series_dict))
+
     time_fmt = " %d %B %Y, %H:%M %p"
     time_zone = ZoneInfo("Asia/Singapore")
     dt = datetime.now(tz=time_zone).strftime(time_fmt)
@@ -79,7 +134,7 @@ def main():
     end_time = time.time()
     duration = f"[Finished in {end_time - start_time:,.3f}s]"
 
-    msg = "\n\n".join([dt, breakdown_table, balances, duration])
+    msg = "\n\n".join([dt, breakdown_table, balances, chart, duration])
     telegram_bot_sendtext("```" + msg + "```")
 
 

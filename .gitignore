@@ -161,4 +161,5 @@ cython_debug/
 
 # api keys
 */secret.py
+*/credentials.json
 temp.py
